@@ -1,13 +1,16 @@
 /**
  * Smartrr (or any) POST webhook capture for Vercel.
  * - Logs full payload + selected headers to Vercel → Project → Logs.
- * - Optionally forwards JSON to FORWARD_URL when a "note-like" string is found.
+ * - Optionally POSTs every received body to FORWARD_URL (second hop).
  *
  * Env:
- *   FORWARD_URL          — POST same JSON here when a note is detected (optional)
- *   FORWARD_ALWAYS       — if "1", POST every payload to FORWARD_URL
- *   NOTE_MIN_LENGTH      — min characters to count as a typed note (default 15)
+ *   FORWARD_URL          — if set, every POST is forwarded here (full original + metadata)
+ *   NOTE_MIN_LENGTH      — min characters for noteCandidates heuristic (default 15)
+ *   SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL  — Supabase project URL
+ *   SUPABASE_SERVICE_ROLE_KEY               — service role (server only); inserts into webhook_events
  */
+
+const { persistWebhookRow } = require("../lib/persistWebhook");
 
 function tryParseJson(s) {
   try {
@@ -115,6 +118,17 @@ function findLikelyNote(body, minLen) {
 }
 
 module.exports = async function handler(req, res) {
+  // Log every hit — GET used to exit with no logs, so browser checks looked "dead" in Vercel.
+  console.log(
+    "[webhook] request",
+    safeStringify({
+      at: new Date().toISOString(),
+      method: req.method,
+      url: req.url,
+      host: req.headers.host,
+    })
+  );
+
   if (req.method === "GET") {
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     return res.status(200).send("POST Smartrr webhooks here. Logs appear in Vercel → Logs.");
@@ -140,8 +154,7 @@ module.exports = async function handler(req, res) {
     const body = await readBody(req);
     const minLen = Math.max(1, parseInt(process.env.NOTE_MIN_LENGTH || "15", 10) || 15);
     const noteHits = findLikelyNote(body, minLen);
-    const forwardUrl = process.env.FORWARD_URL || "";
-    const forwardAlways = process.env.FORWARD_ALWAYS === "1";
+    const forwardUrl = (process.env.FORWARD_URL || "").trim();
 
     const logPayload = {
       at: new Date().toISOString(),
@@ -157,8 +170,19 @@ module.exports = async function handler(req, res) {
 
     console.log("[webhook] payload", safeStringify(logPayload));
 
+    let stored = false;
+    try {
+      const pr = await persistWebhookRow(body, req.headers);
+      stored = pr.saved === true;
+      if (pr.skipped) {
+        console.warn("[webhook] DB skipped (missing SUPABASE_* env)");
+      }
+    } catch (dbErr) {
+      console.error("[webhook] DB persist error", dbErr && dbErr.message);
+    }
+
     let forwarded = false;
-    if (forwardUrl && (forwardAlways || noteHits.length > 0)) {
+    if (forwardUrl) {
       try {
         const r = await fetch(forwardUrl, {
           method: "POST",
@@ -183,6 +207,7 @@ module.exports = async function handler(req, res) {
       ok: true,
       noteCandidates: noteHits.length,
       forwarded,
+      stored,
     });
   } catch (e) {
     console.error("[webhook] handler error", e && e.message, e && e.stack);
