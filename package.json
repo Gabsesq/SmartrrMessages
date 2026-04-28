@@ -5,6 +5,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.105.0"
+    "@supabase/supabase-js": "^2.105.0",
+    "twilio": "^6.0.0"
   }
 }

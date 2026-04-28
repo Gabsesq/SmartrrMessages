@@ -8,9 +8,12 @@
  *   NOTE_MIN_LENGTH      — min characters for noteCandidates heuristic (default 15)
  *   SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL  — Supabase project URL
  *   SUPABASE_SERVICE_ROLE_KEY               — service role (server only); inserts into webhook_events
+ *   ENABLE_FAILED_PAYMENT_CALLS             — "1" enables Twilio calls for failed-payment events
+ *   TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER
  */
 
 const { persistWebhookRow } = require("../lib/persistWebhook");
+const { maybeTriggerFailedPaymentCall } = require("../lib/failedPaymentCalls");
 
 function tryParseJson(s) {
   try {
@@ -181,6 +184,19 @@ module.exports = async function handler(req, res) {
       console.error("[webhook] DB persist error", dbErr && dbErr.message);
     }
 
+    let failedPaymentCall = { skipped: true, reason: "not_attempted" };
+    try {
+      failedPaymentCall = await maybeTriggerFailedPaymentCall(body);
+      if (failedPaymentCall.called) {
+        console.log("[webhook] failed-payment call placed", safeStringify(failedPaymentCall));
+      } else if (!failedPaymentCall.skipped) {
+        console.log("[webhook] failed-payment call result", safeStringify(failedPaymentCall));
+      }
+    } catch (callErr) {
+      failedPaymentCall = { skipped: true, reason: "call_error" };
+      console.error("[webhook] failed-payment call error", callErr && callErr.message);
+    }
+
     let forwarded = false;
     if (forwardUrl) {
       try {
@@ -208,6 +224,7 @@ module.exports = async function handler(req, res) {
       noteCandidates: noteHits.length,
       forwarded,
       stored,
+      failedPaymentCall,
     });
   } catch (e) {
     console.error("[webhook] handler error", e && e.message, e && e.stack);
