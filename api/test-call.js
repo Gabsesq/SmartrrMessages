@@ -3,6 +3,7 @@
  * Does not touch webhooks or failed_payment_calls dedupe.
  *
  * JSON: GET/POST /api/test-call?secret=...&to=%2B1...   (to optional if TWILIO_TEST_TO_NUMBER is set)
+ * JSON probe (no call): ?secret=...&probe=1 — checks TWILIO_FAILED_PAYMENT_AUDIO_URL responds like real audio
  * HTML helper: GET /api/test-call?format=html&secret=...
  *
  * Secret: TWILIO_TEST_CALL_SECRET, or LOGS_SECRET if the former is unset.
@@ -45,6 +46,48 @@ function resolveToRaw(req) {
   }
   if (!to) to = (process.env.TWILIO_TEST_TO_NUMBER || "").trim();
   return to || null;
+}
+
+/** HEAD + tiny GET to verify Twilio can fetch real audio (not HTML / error body). */
+async function probeRecordingUrl() {
+  const url = (process.env.TWILIO_FAILED_PAYMENT_AUDIO_URL || "").trim();
+  if (!url) {
+    return { ok: false, error: "missing_twilio_failed_payment_audio_url" };
+  }
+  try {
+    const head = await fetch(url, { method: "HEAD", redirect: "follow" });
+    const contentType = head.headers.get("content-type") || "";
+    const contentLength = head.headers.get("content-length");
+    const range = await fetch(url, {
+      method: "GET",
+      redirect: "follow",
+      headers: { Range: "bytes=0-15" },
+    });
+    const buf = new Uint8Array(await range.arrayBuffer());
+    const hex = Array.from(buf)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    const prefix = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+    const looksLikeHtml = /^\s*</.test(prefix);
+    const id3 = hex.startsWith("494433"); // "ID3"
+    const mp3Frame = buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0;
+    const riff = prefix.startsWith("RIFF");
+    return {
+      ok: true,
+      headStatus: head.status,
+      rangeStatus: range.status,
+      contentType,
+      contentLength,
+      looksLikeHtmlStart: looksLikeHtml,
+      likelyMp3Id3: id3,
+      likelyMp3Frame: mp3Frame,
+      likelyWav: riff,
+      hint:
+        "Twilio needs audio/mpeg or audio/wav and HTTP 200. If looksLikeHtmlStart is true, the URL is probably an error page. Re-encode as mono MP3 (e.g. 64kbps) or 8kHz WAV per Twilio Play docs.",
+    };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? String(e.message) : "probe_failed" };
+  }
 }
 
 /** @returns {string | undefined} */
@@ -108,7 +151,7 @@ ${setupNote}
   <li><strong>Optional</strong> — second button forces AMD off for debugging.</li>
 </ol>
 ${buttons}
-<p class="hint">Twilio trial accounts may only call <a href="https://www.twilio.com/docs/usage/tutorials/how-to-use-your-free-trial-account">verified numbers</a>. Check the JSON response or Twilio call logs if it fails.</p>
+<p class="hint">If you hear static or beeps, open <code>?secret=…&amp;probe=1</code> (no <code>to</code> needed) to verify your MP3 URL returns real audio, not HTML. Twilio trial accounts may only call <a href="https://www.twilio.com/docs/usage/tutorials/how-to-use-your-free-trial-account">verified numbers</a>.</p>
 </body>
 </html>`;
 }
@@ -135,6 +178,14 @@ module.exports = async function handler(req, res) {
   }
 
   const q = req.query || {};
+  const wantProbe =
+    q.probe === "1" ||
+    (typeof q.probe === "string" && q.probe.trim().toLowerCase() === "true");
+  if (wantProbe) {
+    const probe = await probeRecordingUrl();
+    return res.status(200).json({ ok: true, probe });
+  }
+
   const wantHtml =
     typeof q.format === "string" && q.format.trim().toLowerCase() === "html";
 
