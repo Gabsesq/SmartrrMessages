@@ -10,6 +10,10 @@
  *   SUPABASE_SERVICE_ROLE_KEY               — service role (server only); inserts into webhook_events
  *   ENABLE_FAILED_PAYMENT_CALLS             — "1" enables Twilio calls for failed-payment events
  *   TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER
+ *   TWILIO_FAILED_PAYMENT_AUDIO_URL         — required public MP3/WAV URL for <Play> (your recording)
+ *   TWILIO_AMD_MODE                         — off skips AMD; default DetectMessageEnd (voicemail-friendly)
+ *   TWILIO_MACHINE_DETECTION_TIMEOUT        — optional 3–59 (seconds) for AMD when using DetectMessageEnd
+ *   TWILIO_TEST_CALL_SECRET                   — optional; /api/test-call expects this secret, else LOGS_SECRET
  */
 
 const { persistWebhookRow } = require("../lib/persistWebhook");
